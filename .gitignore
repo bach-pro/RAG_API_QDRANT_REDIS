@@ -1,0 +1,15 @@
+.agents/
+.claude/
+.venv/
+.chroma/
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.env
+.streamlit/secrets.toml
+exports/
+docker-data/
+logs/
+
+gradio_app.py

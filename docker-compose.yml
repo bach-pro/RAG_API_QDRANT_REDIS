@@ -1,0 +1,280 @@
+name: multi-source-rag
+
+x-api-base: &api-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file:
+    - .env
+  restart: unless-stopped
+  healthcheck:
+    test:
+      [
+        "CMD-SHELL",
+        "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()\"",
+      ]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 30s
+
+x-ollama-base: &ollama-base
+  image: ollama/ollama:latest
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
+    interval: 10s
+    timeout: 5s
+    retries: 30
+    start_period: 10s
+
+x-ollama-pull-base: &ollama-pull-base
+  image: ollama/ollama:latest
+  restart: "no"
+  entrypoint:
+    - /bin/sh
+    - -lc
+    - |
+      set -eu
+      until ollama list >/dev/null 2>&1; do
+        echo "Waiting for Ollama at $${OLLAMA_HOST}..."
+        sleep 2
+      done
+      if [ "$${RAG_ANSWER_PROVIDER:-ollama}" = "ollama" ]; then
+        ollama pull "$${OLLAMA_MODEL}"
+      fi
+      ollama pull "$${RAG_EMBEDDING_MODEL}"
+      ollama pull "$${RAG_ROUTER_MODEL}"
+  command: []
+
+x-ollama-pull-env: &ollama-pull-env
+  RAG_ANSWER_PROVIDER: ${RAG_ANSWER_PROVIDER:-ollama}
+  OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:4b-instruct}
+  RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-embeddinggemma:latest}
+  RAG_ROUTER_MODEL: ${RAG_ROUTER_MODEL:-qwen3:1.7b}
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    profiles: ["cpu", "gpu", "gpu0", "gpu1"]
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: qdrant-data
+        target: /qdrant/storage
+    ports:
+      - "${RAG_API_QDRANT_PORT:-6333}:6333"
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["cpu", "gpu", "gpu0", "gpu1"]
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - type: volume
+        source: redis-data
+        target: /data
+    ports:
+      - "${RAG_API_REDIS_PORT:-6379}:6379"
+
+  api-cpu:
+    <<: *api-base
+    profiles: ["cpu"]
+    environment:
+      RAG_QDRANT_URL: http://qdrant:6333
+      RAG_REDIS_URL: redis://redis:6379/0
+      RAG_ANSWER_PROVIDER: ${RAG_ANSWER_PROVIDER:-ollama}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GOOGLE_MODEL: ${GOOGLE_MODEL:-gemini-3.5-flash}
+      OLLAMA_HOST: http://ollama-cpu:11434
+      RAG_LOCAL_OLLAMA_HOST: http://ollama-cpu:11434
+      RAG_ROUTER_OLLAMA_HOST: ${RAG_ROUTER_OLLAMA_HOST:-http://ollama-cpu:11434}
+      RAG_ROUTER_OLLAMA_API_KEY: ${RAG_ROUTER_OLLAMA_API_KEY:-${OLLAMA_API_KEY:-}}
+    volumes:
+      - type: bind
+        source: ./logs
+        target: /app/logs
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ./exports
+        target: /app/exports
+        bind:
+          create_host_path: true
+    ports:
+      - "${RAG_API_CPU_PORT:-9000}:8000"
+    depends_on:
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_started
+      ollama-cpu:
+        condition: service_healthy
+      ollama-pull-cpu:
+        condition: service_completed_successfully
+
+  ollama-cpu:
+    <<: *ollama-base
+    profiles: ["cpu"]
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    volumes:
+      - type: bind
+        source: ./docker-data/cpu/ollama
+        target: /root/.ollama
+        bind:
+          create_host_path: true
+    ports:
+      - "${RAG_API_OLLAMA_CPU_PORT:-11434}:11434"
+
+  ollama-pull-cpu:
+    <<: *ollama-pull-base
+    profiles: ["cpu"]
+    environment:
+      <<: *ollama-pull-env
+      OLLAMA_HOST: http://ollama-cpu:11434
+    depends_on:
+      ollama-cpu:
+        condition: service_healthy
+
+  api-gpu-0:
+    <<: *api-base
+    profiles: ["gpu", "gpu0"]
+    environment:
+      RAG_QDRANT_URL: http://qdrant:6333
+      RAG_REDIS_URL: redis://redis:6379/0
+      RAG_ANSWER_PROVIDER: ${RAG_ANSWER_PROVIDER:-ollama}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GOOGLE_MODEL: ${GOOGLE_MODEL:-gemini-3.5-flash}
+      OLLAMA_HOST: http://ollama-gpu-0:11434
+      RAG_LOCAL_OLLAMA_HOST: http://ollama-gpu-0:11434
+      RAG_ROUTER_OLLAMA_HOST: ${RAG_ROUTER_OLLAMA_HOST:-http://ollama-gpu-0:11434}
+      RAG_ROUTER_OLLAMA_API_KEY: ${RAG_ROUTER_OLLAMA_API_KEY:-${OLLAMA_API_KEY:-}}
+    volumes:
+      - type: bind
+        source: ./logs
+        target: /app/logs
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ./exports
+        target: /app/exports
+        bind:
+          create_host_path: true
+    ports:
+      - "${RAG_API_GPU0_PORT:-9002}:8000"
+    depends_on:
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_started
+      ollama-gpu-0:
+        condition: service_healthy
+      ollama-pull-gpu-0:
+        condition: service_completed_successfully
+
+  ollama-gpu-0:
+    <<: *ollama-base
+    profiles: ["gpu", "gpu0"]
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      NVIDIA_VISIBLE_DEVICES: "0"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - type: bind
+        source: ./docker-data/gpu0/ollama
+        target: /root/.ollama
+        bind:
+          create_host_path: true
+    ports:
+      - "${RAG_API_OLLAMA_GPU0_PORT:-11435}:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: ["gpu"]
+
+  ollama-pull-gpu-0:
+    <<: *ollama-pull-base
+    profiles: ["gpu", "gpu0"]
+    environment:
+      <<: *ollama-pull-env
+      OLLAMA_HOST: http://ollama-gpu-0:11434
+    depends_on:
+      ollama-gpu-0:
+        condition: service_healthy
+
+  api-gpu-1:
+    <<: *api-base
+    profiles: ["gpu", "gpu1"]
+    environment:
+      RAG_QDRANT_URL: http://qdrant:6333
+      RAG_REDIS_URL: redis://redis:6379/0
+      RAG_ANSWER_PROVIDER: ${RAG_ANSWER_PROVIDER:-ollama}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GOOGLE_MODEL: ${GOOGLE_MODEL:-gemini-3.5-flash}
+      OLLAMA_HOST: http://ollama-gpu-1:11434
+      RAG_LOCAL_OLLAMA_HOST: http://ollama-gpu-1:11434
+      RAG_ROUTER_OLLAMA_HOST: ${RAG_ROUTER_OLLAMA_HOST:-http://ollama-gpu-1:11434}
+      RAG_ROUTER_OLLAMA_API_KEY: ${RAG_ROUTER_OLLAMA_API_KEY:-${OLLAMA_API_KEY:-}}
+    volumes:
+      - type: bind
+        source: ./logs
+        target: /app/logs
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ./exports
+        target: /app/exports
+        bind:
+          create_host_path: true
+    ports:
+      - "${RAG_API_GPU1_PORT:-9003}:8000"
+    depends_on:
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_started
+      ollama-gpu-1:
+        condition: service_healthy
+      ollama-pull-gpu-1:
+        condition: service_completed_successfully
+
+  ollama-gpu-1:
+    <<: *ollama-base
+    profiles: ["gpu", "gpu1"]
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      NVIDIA_VISIBLE_DEVICES: "1"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - type: bind
+        source: ./docker-data/gpu1/ollama
+        target: /root/.ollama
+        bind:
+          create_host_path: true
+    ports:
+      - "${RAG_API_OLLAMA_GPU1_PORT:-11436}:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: ["gpu"]
+
+  ollama-pull-gpu-1:
+    <<: *ollama-pull-base
+    profiles: ["gpu", "gpu1"]
+    environment:
+      <<: *ollama-pull-env
+      OLLAMA_HOST: http://ollama-gpu-1:11434
+    depends_on:
+      ollama-gpu-1:
+        condition: service_healthy
+
+volumes:
+  qdrant-data:
+  redis-data:

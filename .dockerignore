@@ -1,0 +1,15 @@
+.agents/
+.chroma/
+.chroma_*/
+.claude/
+.git/
+.pytest_cache/
+.venv/
+docker-data/
+exports/
+logs/
+__pycache__/
+*.py[cod]
+*.log
+.env
+.streamlit/secrets.toml
