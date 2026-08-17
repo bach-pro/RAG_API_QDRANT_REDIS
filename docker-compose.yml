@@ -18,6 +18,15 @@ x-api-base: &api-base
     retries: 5
     start_period: 30s
 
+x-worker-base: &worker-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file:
+    - .env
+  restart: unless-stopped
+  command: ["python", "-m", "rag_api.worker"]
+
 x-ollama-base: &ollama-base
   image: ollama/ollama:latest
   restart: unless-stopped
@@ -83,6 +92,7 @@ services:
     environment:
       RAG_QDRANT_URL: http://qdrant:6333
       RAG_REDIS_URL: redis://redis:6379/0
+      RAG_INGEST_DATA_DIR: /app/ingest-data
       RAG_ANSWER_PROVIDER: ${RAG_ANSWER_PROVIDER:-ollama}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       GOOGLE_MODEL: ${GOOGLE_MODEL:-gemini-3.5-flash}
@@ -101,8 +111,43 @@ services:
         target: /app/exports
         bind:
           create_host_path: true
+      - type: bind
+        source: ./docker-data/ingest
+        target: /app/ingest-data
+        bind:
+          create_host_path: true
     ports:
       - "${RAG_API_CPU_PORT:-9000}:8000"
+    depends_on:
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_started
+      ollama-cpu:
+        condition: service_healthy
+      ollama-pull-cpu:
+        condition: service_completed_successfully
+
+  worker-cpu:
+    <<: *worker-base
+    profiles: ["cpu"]
+    environment:
+      RAG_QDRANT_URL: http://qdrant:6333
+      RAG_REDIS_URL: redis://redis:6379/0
+      RAG_INGEST_DATA_DIR: /app/ingest-data
+      RAG_ANSWER_PROVIDER: ${RAG_ANSWER_PROVIDER:-ollama}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GOOGLE_MODEL: ${GOOGLE_MODEL:-gemini-3.5-flash}
+      OLLAMA_HOST: http://ollama-cpu:11434
+      RAG_LOCAL_OLLAMA_HOST: http://ollama-cpu:11434
+      RAG_ROUTER_OLLAMA_HOST: ${RAG_ROUTER_OLLAMA_HOST:-http://ollama-cpu:11434}
+      RAG_ROUTER_OLLAMA_API_KEY: ${RAG_ROUTER_OLLAMA_API_KEY:-${OLLAMA_API_KEY:-}}
+    volumes:
+      - type: bind
+        source: ./docker-data/ingest
+        target: /app/ingest-data
+        bind:
+          create_host_path: true
     depends_on:
       qdrant:
         condition: service_started
@@ -143,6 +188,7 @@ services:
     environment:
       RAG_QDRANT_URL: http://qdrant:6333
       RAG_REDIS_URL: redis://redis:6379/0
+      RAG_INGEST_DATA_DIR: /app/ingest-data
       RAG_ANSWER_PROVIDER: ${RAG_ANSWER_PROVIDER:-ollama}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       GOOGLE_MODEL: ${GOOGLE_MODEL:-gemini-3.5-flash}
@@ -161,8 +207,43 @@ services:
         target: /app/exports
         bind:
           create_host_path: true
+      - type: bind
+        source: ./docker-data/ingest
+        target: /app/ingest-data
+        bind:
+          create_host_path: true
     ports:
       - "${RAG_API_GPU0_PORT:-9002}:8000"
+    depends_on:
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_started
+      ollama-gpu-0:
+        condition: service_healthy
+      ollama-pull-gpu-0:
+        condition: service_completed_successfully
+
+  worker-gpu-0:
+    <<: *worker-base
+    profiles: ["gpu", "gpu0"]
+    environment:
+      RAG_QDRANT_URL: http://qdrant:6333
+      RAG_REDIS_URL: redis://redis:6379/0
+      RAG_INGEST_DATA_DIR: /app/ingest-data
+      RAG_ANSWER_PROVIDER: ${RAG_ANSWER_PROVIDER:-ollama}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GOOGLE_MODEL: ${GOOGLE_MODEL:-gemini-3.5-flash}
+      OLLAMA_HOST: http://ollama-gpu-0:11434
+      RAG_LOCAL_OLLAMA_HOST: http://ollama-gpu-0:11434
+      RAG_ROUTER_OLLAMA_HOST: ${RAG_ROUTER_OLLAMA_HOST:-http://ollama-gpu-0:11434}
+      RAG_ROUTER_OLLAMA_API_KEY: ${RAG_ROUTER_OLLAMA_API_KEY:-${OLLAMA_API_KEY:-}}
+    volumes:
+      - type: bind
+        source: ./docker-data/ingest
+        target: /app/ingest-data
+        bind:
+          create_host_path: true
     depends_on:
       qdrant:
         condition: service_started
@@ -212,6 +293,7 @@ services:
     environment:
       RAG_QDRANT_URL: http://qdrant:6333
       RAG_REDIS_URL: redis://redis:6379/0
+      RAG_INGEST_DATA_DIR: /app/ingest-data
       RAG_ANSWER_PROVIDER: ${RAG_ANSWER_PROVIDER:-ollama}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       GOOGLE_MODEL: ${GOOGLE_MODEL:-gemini-3.5-flash}
@@ -230,8 +312,43 @@ services:
         target: /app/exports
         bind:
           create_host_path: true
+      - type: bind
+        source: ./docker-data/ingest
+        target: /app/ingest-data
+        bind:
+          create_host_path: true
     ports:
       - "${RAG_API_GPU1_PORT:-9003}:8000"
+    depends_on:
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_started
+      ollama-gpu-1:
+        condition: service_healthy
+      ollama-pull-gpu-1:
+        condition: service_completed_successfully
+
+  worker-gpu-1:
+    <<: *worker-base
+    profiles: ["gpu", "gpu1"]
+    environment:
+      RAG_QDRANT_URL: http://qdrant:6333
+      RAG_REDIS_URL: redis://redis:6379/0
+      RAG_INGEST_DATA_DIR: /app/ingest-data
+      RAG_ANSWER_PROVIDER: ${RAG_ANSWER_PROVIDER:-ollama}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GOOGLE_MODEL: ${GOOGLE_MODEL:-gemini-3.5-flash}
+      OLLAMA_HOST: http://ollama-gpu-1:11434
+      RAG_LOCAL_OLLAMA_HOST: http://ollama-gpu-1:11434
+      RAG_ROUTER_OLLAMA_HOST: ${RAG_ROUTER_OLLAMA_HOST:-http://ollama-gpu-1:11434}
+      RAG_ROUTER_OLLAMA_API_KEY: ${RAG_ROUTER_OLLAMA_API_KEY:-${OLLAMA_API_KEY:-}}
+    volumes:
+      - type: bind
+        source: ./docker-data/ingest
+        target: /app/ingest-data
+        bind:
+          create_host_path: true
     depends_on:
       qdrant:
         condition: service_started

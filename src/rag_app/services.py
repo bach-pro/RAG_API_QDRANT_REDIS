@@ -20,6 +20,13 @@ class IngestResult:
     documents_loaded: int
     chunks_indexed: int
     collection_count: int
+    replaced_existing: bool = False
+
+
+@dataclass(frozen=True)
+class BotDeleteResult:
+    bot_id: str
+    chunks_deleted: int
 
 
 class RagService:
@@ -28,7 +35,7 @@ class RagService:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self._store: QdrantKnowledgeStore | None = None
-        self._bm25: BM25Index | None = None
+        self._bm25_by_bot: dict[str, BM25Index] = {}
         self._lock = RLock()
 
     @property
@@ -55,45 +62,66 @@ class RagService:
             if self._store is not None:
                 self._store.close()
             self._store = self._create_store(reset=True)
-            self._bm25 = None
+            self._bm25_by_bot.clear()
 
-    @property
-    def bm25(self) -> BM25Index:
+    def bm25_for(self, bot_id: str) -> BM25Index:
         with self._lock:
-            if self._bm25 is None:
-                self.refresh_retrieval_cache()
-            if self._bm25 is None:
+            if bot_id not in self._bm25_by_bot:
+                self.refresh_retrieval_cache(bot_id)
+            index = self._bm25_by_bot.get(bot_id)
+            if index is None:
                 raise RuntimeError("BM25 cache could not be initialized.")
-            return self._bm25
+            return index
 
-    def count(self) -> int:
+    def count(self, bot_id: str | None = None) -> int:
         with self._lock:
-            return self.store.count()
+            return self.store.count(bot_id=bot_id)
 
-    def refresh_retrieval_cache(self) -> None:
+    def refresh_retrieval_cache(self, bot_id: str) -> None:
         with self._lock:
-            self._bm25 = BM25Index.from_store(self.store)
+            self._bm25_by_bot[bot_id] = BM25Index.from_store(self.store, bot_id=bot_id)
 
     def ingest_documents(
         self,
         *,
+        bot_id: str,
         documents: list[KnowledgeDocument],
-        reset: bool = False,
+        doc_id: str | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> IngestResult:
         if not documents:
             raise ValueError("documents must not be empty.")
+        bot_id = bot_id.strip()
+        if not bot_id:
+            raise ValueError("bot_id must not be empty.")
+        doc_id = doc_id.strip() if doc_id is not None else None
+        if not doc_id:
+            doc_id = None
+        scoped_documents = [
+            KnowledgeDocument(
+                id=document.id,
+                text=document.text,
+                metadata={
+                    **document.metadata,
+                    "bot_id": bot_id,
+                    **({"document_id": doc_id} if doc_id is not None else {}),
+                },
+            )
+            for document in documents
+        ]
         return self._ingest_prepared_documents(
-            documents=documents,
-            reset=reset,
+            bot_id=bot_id,
+            documents=scoped_documents,
+            doc_id=doc_id,
             progress_callback=progress_callback,
         )
 
     def _ingest_prepared_documents(
         self,
         *,
+        bot_id: str,
         documents: list[KnowledgeDocument],
-        reset: bool,
+        doc_id: str | None,
         progress_callback: ProgressCallback | None,
     ) -> IngestResult:
         if progress_callback is not None:
@@ -112,24 +140,45 @@ class RagService:
             if progress_callback is not None:
                 progress_callback({"event": "index_start"})
 
-            if reset:
+            replaced_existing = False
+            if doc_id is not None:
+                replaced_existing = self.store.document_exists(doc_id, bot_id)
+            if replaced_existing:
                 if progress_callback is not None:
-                    progress_callback({"event": "reset_start"})
-                self.reset_store()
+                    progress_callback({"event": "replace_start", "doc_id": doc_id})
+                self.store.delete_by_document_id(doc_id, bot_id)
+                self._bm25_by_bot.pop(bot_id, None)
                 if progress_callback is not None:
-                    progress_callback({"event": "reset_done"})
+                    progress_callback({"event": "replace_done", "doc_id": doc_id})
 
-            collection_count = self.store.ingest(chunks, progress_callback=progress_callback)
-            self.refresh_retrieval_cache()
+            collection_count = self.store.ingest(
+                chunks,
+                bot_id=bot_id,
+                progress_callback=progress_callback,
+            )
+            self.refresh_retrieval_cache(bot_id)
             return IngestResult(
                 documents_loaded=len(documents),
                 chunks_indexed=len(chunks),
                 collection_count=collection_count,
+                replaced_existing=replaced_existing,
             )
+
+    def delete_bot(self, bot_id: str) -> BotDeleteResult:
+        bot_id = bot_id.strip()
+        if not bot_id:
+            raise ValueError("bot_id must not be empty.")
+        with self._lock:
+            chunks_deleted = self.store.count(bot_id=bot_id)
+            if chunks_deleted:
+                self.store.delete_by_bot_id(bot_id)
+            self._bm25_by_bot.pop(bot_id, None)
+            return BotDeleteResult(bot_id=bot_id, chunks_deleted=chunks_deleted)
 
     def answer(
         self,
         *,
+        bot_id: str,
         question: str,
         mode: str = "Auto Router",
         top_k: int = 5,
@@ -141,7 +190,8 @@ class RagService:
             return answer_question(
                 config=self.config,
                 store=self.store,
-                bm25=self.bm25,
+                bm25=self.bm25_for(bot_id),
+                bot_id=bot_id,
                 question=question,
                 mode=mode,
                 k=top_k,
@@ -153,6 +203,7 @@ class RagService:
     def answer_stream(
         self,
         *,
+        bot_id: str,
         question: str,
         mode: str = "Auto Router",
         top_k: int = 5,
@@ -164,7 +215,8 @@ class RagService:
             return stream_answer_question(
                 config=self.config,
                 store=self.store,
-                bm25=self.bm25,
+                bm25=self.bm25_for(bot_id),
+                bot_id=bot_id,
                 question=question,
                 mode=mode,
                 k=top_k,
