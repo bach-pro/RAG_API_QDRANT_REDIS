@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 
 from rag_api.dependencies.services import get_chat_memory, get_rag_service
 from rag_api.schemas.chat import ChatRequest, ChatResponse, SourceResponse
+from rag_api.schemas.common import BotId
 from rag_app.memory import RedisChatMemory
 from rag_app.models import RetrievedDocument
 from rag_app.rag import parse_focused_answer
@@ -71,18 +72,20 @@ async def _close_stream(chunks: object) -> None:
 
 def _load_history(
     memory: RedisChatMemory,
+    bot_id: str,
     conversation_id: str | None,
 ) -> list[dict[str, Any]]:
     if not conversation_id:
         return []
     try:
-        return memory.get_messages(conversation_id)
+        return memory.get_messages(_memory_conversation_id(bot_id, conversation_id))
     except Exception:
         return []
 
 
 def _remember_turn(
     memory: RedisChatMemory,
+    bot_id: str,
     conversation_id: str | None,
     question: str,
     answer: str,
@@ -90,9 +93,15 @@ def _remember_turn(
     if not conversation_id:
         return
     try:
-        memory.append_turn(conversation_id, question, answer)
+        memory.append_turn(_memory_conversation_id(bot_id, conversation_id), question, answer)
     except Exception:
         pass
+
+
+def _memory_conversation_id(bot_id: str, conversation_id: str) -> str:
+    """Namespace Redis history without changing the public conversation ID."""
+
+    return f"{len(bot_id)}:{bot_id}:{conversation_id}"
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -102,8 +111,9 @@ def chat(
     memory: RedisChatMemory = Depends(get_chat_memory),
 ) -> ChatResponse:
     question = request.question.strip()
-    history = _load_history(memory, request.conversation_id)
+    history = _load_history(memory, request.bot_id, request.conversation_id)
     response = service.answer(
+        bot_id=request.bot_id,
         question=question,
         mode=request.mode,
         top_k=request.top_k,
@@ -111,8 +121,9 @@ def chat(
         mmr_lambda=request.mmr_lambda,
         history=history,
     )
-    _remember_turn(memory, request.conversation_id, question, response.answer)
+    _remember_turn(memory, request.bot_id, request.conversation_id, question, response.answer)
     return ChatResponse(
+        bot_id=request.bot_id,
         answer=response.answer,
         mode=response.mode,
         sources=[_source_to_response(source) for source in response.sources],
@@ -129,8 +140,9 @@ async def chat_stream(
     memory: RedisChatMemory = Depends(get_chat_memory),
 ) -> StreamingResponse:
     question = request.question.strip()
-    history = _load_history(memory, request.conversation_id)
+    history = _load_history(memory, request.bot_id, request.conversation_id)
     response = service.answer_stream(
+        bot_id=request.bot_id,
         question=question,
         mode=request.mode,
         top_k=request.top_k,
@@ -149,6 +161,7 @@ async def chat_stream(
             yield _sse_event(
                 "metadata",
                 {
+                    "bot_id": request.bot_id,
                     "mode": response.mode,
                     "sources": [_dump_model(source) for source in sources],
                     "diagnostics": response.diagnostics,
@@ -165,10 +178,20 @@ async def chat_stream(
                 answer_parts.append(chunk)
                 yield _sse_event("token", {"token": chunk})
             answer = parse_focused_answer("".join(answer_parts))
-            _remember_turn(memory, request.conversation_id, question, answer)
+            _remember_turn(
+                memory,
+                request.bot_id,
+                request.conversation_id,
+                question,
+                answer,
+            )
             yield _sse_event(
                 "done",
-                {"answer": answer, "conversation_id": request.conversation_id},
+                {
+                    "answer": answer,
+                    "bot_id": request.bot_id,
+                    "conversation_id": request.conversation_id,
+                },
             )
         except asyncio.CancelledError:
             # Starlette cancels this task when the SSE client disconnects.
@@ -198,7 +221,8 @@ async def chat_stream(
 @router.delete("/chat/{conversation_id}/memory")
 def clear_chat_memory(
     conversation_id: str,
+    bot_id: BotId,
     memory: RedisChatMemory = Depends(get_chat_memory),
 ) -> dict[str, str]:
-    memory.clear(conversation_id)
-    return {"status": "ok"}
+    memory.clear(_memory_conversation_id(bot_id, conversation_id))
+    return {"status": "ok", "bot_id": bot_id}

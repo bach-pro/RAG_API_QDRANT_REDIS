@@ -23,8 +23,8 @@ class BM25Index:
         self._bm25 = BM25Okapi(self._tokenized) if documents else None
 
     @classmethod
-    def from_store(cls, store: QdrantKnowledgeStore) -> "BM25Index":
-        return cls(store.get_all_documents())
+    def from_store(cls, store: QdrantKnowledgeStore, bot_id: str) -> "BM25Index":
+        return cls(store.get_all_documents(bot_id=bot_id))
 
     def search(self, query: str, k: int = 5) -> list[RetrievedDocument]:
         if not self.documents or self._bm25 is None:
@@ -40,8 +40,13 @@ class BM25Index:
         return results
 
 
-def semantic_search(store: QdrantKnowledgeStore, query: str, k: int = 5) -> list[RetrievedDocument]:
-    return store.query(query, k=k)
+def semantic_search(
+    store: QdrantKnowledgeStore,
+    query: str,
+    bot_id: str,
+    k: int = 5,
+) -> list[RetrievedDocument]:
+    return store.query(query, bot_id=bot_id, k=k)
 
 
 def bm25_search(index: BM25Index, query: str, k: int = 5) -> list[RetrievedDocument]:
@@ -68,11 +73,12 @@ def hybrid_rrf_search(
     store: QdrantKnowledgeStore,
     bm25: BM25Index,
     query: str,
+    bot_id: str,
     k: int = 5,
     fetch_k: int = 10,
     rrf_k: int = 60,
 ) -> list[RetrievedDocument]:
-    semantic = semantic_search(store, query, k=fetch_k)
+    semantic = semantic_search(store, query, bot_id=bot_id, k=fetch_k)
     sparse = bm25_search(bm25, query, k=fetch_k)
     return reciprocal_rank_fusion([semantic, sparse], limit=k, rrf_k=rrf_k)
 
@@ -87,14 +93,20 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 def mmr_search(
     store: QdrantKnowledgeStore,
     query: str,
+    bot_id: str,
     k: int = 5,
     fetch_k: int = 12,
     lambda_mult: float = 0.5,
 ) -> list[RetrievedDocument]:
-    candidates = store.query(query, k=max(fetch_k, k), include_embeddings=True)
+    candidates = store.query(
+        query,
+        bot_id=bot_id,
+        k=max(fetch_k, k),
+        include_embeddings=True,
+    )
     candidates = [doc for doc in candidates if doc.embedding]
     if not candidates:
-        return semantic_search(store, query, k=k)
+        return semantic_search(store, query, bot_id=bot_id, k=k)
 
     query_embedding = np.array(store.embedding_function([query])[0], dtype=np.float32)
     doc_embeddings = [np.array(doc.embedding, dtype=np.float32) for doc in candidates]

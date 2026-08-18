@@ -4,8 +4,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from rag_api.schemas.common import BotId
+
 
 class ChatRequest(BaseModel):
+    bot_id: BotId
     question: str = Field(..., min_length=1)
     conversation_id: str | None = Field(default=None, max_length=128)
     mode: str = "Auto Router"
@@ -25,6 +28,7 @@ class SourceResponse(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    bot_id: str
     answer: str
     mode: str
     sources: list[SourceResponse]

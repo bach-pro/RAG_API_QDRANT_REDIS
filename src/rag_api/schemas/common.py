@@ -1,6 +1,20 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import Annotated
+
+from pydantic import BaseModel, StringConstraints
+
+
+BOT_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+BotId = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=128,
+        pattern=BOT_ID_PATTERN,
+    ),
+]
 
 
 class HealthResponse(BaseModel):

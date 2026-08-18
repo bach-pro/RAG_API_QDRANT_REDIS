@@ -533,6 +533,7 @@ def retrieve_documents(
     config: AppConfig,
     store: QdrantKnowledgeStore,
     bm25: BM25Index,
+    bot_id: str,
     question: str,
     mode: str,
     k: int,
@@ -540,17 +541,20 @@ def retrieve_documents(
     lambda_mult: float,
 ) -> tuple[list[RetrievedDocument], dict[str, Any]]:
     mode_key = mode.lower()
-    diagnostics: dict[str, Any] = {}
+    diagnostics: dict[str, Any] = {"bot_id": bot_id}
     exact_docs: list[RetrievedDocument] = []
     exact_document_ids = extract_document_ids(question)
     if exact_document_ids:
         for document_id in exact_document_ids:
-            exact_docs.extend(store.get_by_document_id(document_id))
+            exact_docs.extend(store.get_by_document_id(document_id, bot_id=bot_id))
         diagnostics["exact_document_ids"] = exact_document_ids
         diagnostics["exact_document_matches"] = [doc.id for doc in exact_docs]
 
     if mode_key == "semantic":
-        return merge_exact_matches(exact_docs, semantic_search(store, question, k=k))[:k], diagnostics
+        return merge_exact_matches(
+            exact_docs,
+            semantic_search(store, question, bot_id=bot_id, k=k),
+        )[:k], diagnostics
 
     if mode_key == "bm25":
         diagnostics["retriever"] = "BM25Okapi"
@@ -560,7 +564,14 @@ def retrieve_documents(
         return (
             merge_exact_matches(
                 exact_docs,
-                mmr_search(store, question, k=k, fetch_k=fetch_k, lambda_mult=lambda_mult),
+                mmr_search(
+                    store,
+                    question,
+                    bot_id=bot_id,
+                    k=k,
+                    fetch_k=fetch_k,
+                    lambda_mult=lambda_mult,
+                ),
             )[:k],
             diagnostics,
         )
@@ -572,7 +583,10 @@ def retrieve_documents(
             [{"role": "user", "content": HYDE_TEMPLATE.format(question=question)}],
         )
         diagnostics["hypothetical_document"] = hypothetical_doc
-        return merge_exact_matches(exact_docs, semantic_search(store, hypothetical_doc, k=k))[:k], diagnostics
+        return merge_exact_matches(
+            exact_docs,
+            semantic_search(store, hypothetical_doc, bot_id=bot_id, k=k),
+        )[:k], diagnostics
 
     if mode_key == "decomposition":
         auxiliary_config = auxiliary_ollama_config(config)
@@ -587,8 +601,11 @@ def retrieve_documents(
         ]
         sub_questions = [q for q in sub_questions if q][:4]
         diagnostics["sub_questions"] = sub_questions
-        ranked_lists = [semantic_search(store, question, k=fetch_k)]
-        ranked_lists.extend(semantic_search(store, sub_q, k=fetch_k) for sub_q in sub_questions)
+        ranked_lists = [semantic_search(store, question, bot_id=bot_id, k=fetch_k)]
+        ranked_lists.extend(
+            semantic_search(store, sub_q, bot_id=bot_id, k=fetch_k)
+            for sub_q in sub_questions
+        )
         return (
             merge_exact_matches(
                 exact_docs,
@@ -604,6 +621,7 @@ def retrieve_documents(
                 store,
                 bm25,
                 question,
+                bot_id=bot_id,
                 k=k,
                 fetch_k=fetch_k,
                 rrf_k=config.rrf_k,
@@ -617,6 +635,7 @@ def prepare_answer_request(
     config: AppConfig,
     store: QdrantKnowledgeStore,
     bm25: BM25Index,
+    bot_id: str,
     question: str,
     mode: str = "BM25",
     k: int = 5,
@@ -640,6 +659,7 @@ def prepare_answer_request(
         config=config,
         store=store,
         bm25=bm25,
+        bot_id=bot_id,
         question=retrieval_question,
         mode=mode,
         k=k,
@@ -688,6 +708,7 @@ def answer_question(
     config: AppConfig,
     store: QdrantKnowledgeStore,
     bm25: BM25Index,
+    bot_id: str,
     question: str,
     mode: str = "BM25",
     k: int = 5,
@@ -699,6 +720,7 @@ def answer_question(
         config=config,
         store=store,
         bm25=bm25,
+        bot_id=bot_id,
         question=question,
         mode=mode,
         k=k,
@@ -727,6 +749,7 @@ def stream_answer_question(
     config: AppConfig,
     store: QdrantKnowledgeStore,
     bm25: BM25Index,
+    bot_id: str,
     question: str,
     mode: str = "BM25",
     k: int = 5,
@@ -738,6 +761,7 @@ def stream_answer_question(
         config=config,
         store=store,
         bm25=bm25,
+        bot_id=bot_id,
         question=question,
         mode=mode,
         k=k,
