@@ -20,7 +20,7 @@ from rag_api.schemas.ingest import (
     IngestJobStatusResponse,
 )
 from rag_api.services.ingest_request_store import IngestRequestStore
-from rag_api.services.job_service import ActiveIngestJobError, IngestJobState, JobService
+from rag_api.services.job_service import IngestJobState, JobService
 from rag_app.data_loader import SUPPORTED_FILE_EXTENSIONS, UploadedFileData
 from rag_app.services import RagService
 
@@ -49,19 +49,6 @@ def _job_to_status_response(job: IngestJobState) -> IngestJobStatusResponse:
     )
 
 
-def _active_job_response(exc: ActiveIngestJobError) -> HTTPException:
-    active_job = exc.active_job
-    return HTTPException(
-        status_code=409,
-        detail={
-            "message": "An ingest job is already active.",
-            "job_id": active_job.job_id,
-            "bot_id": active_job.bot_id,
-            "status": active_job.status,
-        },
-    )
-
-
 def _create_and_enqueue_job(
     *,
     job_id: str,
@@ -78,9 +65,6 @@ def _create_and_enqueue_job(
             job_id=job_id,
             doc_ids=doc_ids,
         )
-    except ActiveIngestJobError as exc:
-        request_store.delete(job_id)
-        raise _active_job_response(exc) from exc
     except Exception:
         request_store.delete(job_id)
         raise

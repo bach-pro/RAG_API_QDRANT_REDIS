@@ -663,30 +663,37 @@ def test_delete_bot_endpoint_deletes_only_the_requested_bot_data():
     assert service.delete_bot_calls == ["bot-policy"]
 
 
-def test_ingest_endpoint_rejects_second_active_job(tmp_path):
+def test_file_ingest_endpoint_queues_second_job_while_first_is_running(tmp_path):
     app = create_app()
     service = FakeRagService()
     job_service = JobService()
-    active_job = job_service.create_ingest_job("bot-active")
+    request_store = IngestRequestStore(tmp_path)
     app.dependency_overrides[get_rag_service] = lambda: service
     app.dependency_overrides[get_job_service] = lambda: job_service
-    app.dependency_overrides[get_ingest_request_store] = lambda: IngestRequestStore(tmp_path)
+    app.dependency_overrides[get_ingest_request_store] = lambda: request_store
     client = TestClient(app)
 
-    response = client.post(
-        "/v1/ingest/documents",
-        json={
-            "bot_id": "bot-policy",
-            "documents": [{"text": "content"}],
-        },
+    first_response = client.post(
+        "/v1/ingest/files",
+        data={"bot_id": "bot-policy", "doc_id": "doc-1"},
+        files=[("files", ("doc1.pdf", b"%PDF-1.4 first", "application/pdf"))],
+    )
+    first_job_id = first_response.json()["job_id"]
+    assert job_service.dequeue(timeout=1) == first_job_id
+    job_service.update(first_job_id, status="running")
+
+    second_response = client.post(
+        "/v1/ingest/files",
+        data={"bot_id": "bot-policy", "doc_id": "doc-2"},
+        files=[("files", ("doc2.pdf", b"%PDF-1.4 second", "application/pdf"))],
     )
 
-    assert response.status_code == 409
-    detail = response.json()["detail"]
-    assert detail["message"] == "An ingest job is already active."
-    assert detail["job_id"] == active_job.job_id
-    assert detail["bot_id"] == "bot-active"
-    assert detail["status"] == "queued"
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    second_job = second_response.json()
+    assert second_job["status"] == "queued"
+    assert second_job["doc_id"] == "doc-2"
+    assert job_service.dequeue(timeout=1) == second_job["job_id"]
     assert service.ingest_documents_calls == []
 
 
