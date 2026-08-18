@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from io import BytesIO, StringIO
 
@@ -208,6 +209,49 @@ def test_chat_history_is_namespaced_by_bot_id():
     assert service.answer_calls[1]["history"] == []
     assert len(service.answer_calls[2]["history"]) == 2
     assert len(memory.messages) == 2
+
+
+def test_chat_stop_clears_memory_from_json_body_for_requested_bot_only():
+    app = create_app()
+    memory = FakeChatMemory()
+    app.dependency_overrides[get_chat_memory] = lambda: memory
+    client = TestClient(app)
+    conversation_id = "shared-conversation"
+    bot_a_key = f"{len('bot-a')}:bot-a:{conversation_id}"
+    bot_b_key = f"{len('bot-b')}:bot-b:{conversation_id}"
+    memory.messages[bot_a_key] = [{"role": "user", "content": "Question A"}]
+    memory.messages[bot_b_key] = [{"role": "user", "content": "Question B"}]
+
+    response = client.post(
+        "/v1/chat/stop",
+        json={"bot_id": "bot-a", "conversation_id": conversation_id},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "bot_id": "bot-a"}
+    assert bot_a_key not in memory.messages
+    assert memory.messages[bot_b_key] == [{"role": "user", "content": "Question B"}]
+
+
+def test_chat_stop_accepts_stringified_json_body():
+    app = create_app()
+    memory = FakeChatMemory()
+    app.dependency_overrides[get_chat_memory] = lambda: memory
+    client = TestClient(app)
+    conversation_id = "000000001"
+    memory_key = f"{len('bot-a')}:bot-a:{conversation_id}"
+    memory.messages[memory_key] = [{"role": "user", "content": "Question"}]
+
+    response = client.post(
+        "/v1/chat/stop",
+        json=json.dumps(
+            {"conversation_id": conversation_id, "bot_id": "bot-a"}
+        ),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "bot_id": "bot-a"}
+    assert memory_key not in memory.messages
 
 
 def test_document_ingest_endpoint_queues_request_and_worker_completes_it(tmp_path):

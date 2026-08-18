@@ -123,6 +123,7 @@ Nếu `OLLAMA_HOST` hoặc `RAG_ROUTER_OLLAMA_HOST` là `https://ollama.com`, c�
 | `DELETE` | `/v1/bots/{bot_id}` | Xóa toàn bộ dữ liệu vector của một bot. |
 | `POST` | `/v1/chat` | Trả câu trả lời JSON. |
 | `POST` | `/v1/chat/stream` | Trả SSE: `metadata`, `token`, `done`, hoặc `error`. |
+| `POST` | `/v1/chat/stop` | Xóa history Redis; nhận `bot_id` và `conversation_id` trong JSON body. |
 | `DELETE` | `/v1/chat/{conversation_id}/memory?bot_id=...` | Xóa history Redis của một bot. |
 
 ### Phân vùng dữ liệu theo bot
@@ -215,6 +216,18 @@ curl.exe -N -X POST http://localhost:9000/v1/chat/stream `
 ```
 
 Nhấn `Ctrl+C` sau khi nhận token đầu tiên để đóng SSE client. Response sẽ kết thúc mà không có event `done`; log API ghi nhận task stream bị hủy. Input token và output token đã sinh trước thời điểm hủy vẫn có thể bị provider tính phí.
+
+### Dừng chat và xóa history
+
+```powershell
+curl.exe -X POST http://localhost:9000/v1/chat/stop `
+  -H "Content-Type: application/json" `
+  -d '{"bot_id":"dfcdgfhdgvchs23e7e6rfuy4u3","conversation_id":"demo"}'
+```
+
+Endpoint này xóa history Redis của đúng cặp `bot_id` + `conversation_id`.
+Ngoài JSON object chuẩn, API cũng chấp nhận body là một chuỗi chứa JSON hợp lệ để tương
+thích với các proxy đang chuyển tiếp payload đã được stringify.
 
 ## Retrieval modes
 
