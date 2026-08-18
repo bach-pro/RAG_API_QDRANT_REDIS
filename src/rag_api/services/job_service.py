@@ -12,8 +12,6 @@ import redis
 
 
 JobStatus = Literal["queued", "running", "completed", "failed"]
-ACTIVE_JOB_STATUSES = {"queued", "running"}
-TERMINAL_JOB_STATUSES = {"completed", "failed"}
 
 
 @dataclass
@@ -31,12 +29,6 @@ class IngestJobState:
     error: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
-
-
-class ActiveIngestJobError(RuntimeError):
-    def __init__(self, active_job: IngestJobState) -> None:
-        super().__init__("An ingest job is already active.")
-        self.active_job = active_job
 
 
 class JobService:
@@ -57,10 +49,6 @@ class JobService:
         doc_ids: list[str] | None = None,
     ) -> IngestJobState:
         with self._lock:
-            active_job = self._active_ingest_job_unlocked()
-            if active_job is not None:
-                raise ActiveIngestJobError(active_job)
-
             now = datetime.now(timezone.utc)
             job = IngestJobState(
                 job_id=job_id or str(uuid4()),
@@ -86,10 +74,6 @@ class JobService:
                 self._queue_condition.wait(timeout=None if timeout == 0 else timeout)
             return self._queue.popleft() if self._queue else None
 
-    def get_active_ingest_job(self) -> IngestJobState | None:
-        with self._lock:
-            return self._active_ingest_job_unlocked()
-
     def get(self, job_id: str) -> IngestJobState | None:
         with self._lock:
             return self._jobs.get(job_id)
@@ -101,13 +85,6 @@ class JobService:
                 setattr(job, key, value)
             job.updated_at = datetime.now(timezone.utc)
             return job
-
-    def _active_ingest_job_unlocked(self) -> IngestJobState | None:
-        for job in self._jobs.values():
-            if job.status in ACTIVE_JOB_STATUSES:
-                return job
-        return None
-
 
 class RedisJobService(JobService):
     """Redis-backed state shared by the API producer and ingest worker."""
@@ -129,7 +106,6 @@ class RedisJobService(JobService):
         )
         self.queue_name = queue_name
         self.key_prefix = key_prefix.rstrip(":")
-        self.active_key = f"{self.key_prefix}:active"
         self.job_key_prefix = f"{self.key_prefix}:jobs:"
 
     def _job_key(self, job_id: str) -> str:
@@ -156,26 +132,8 @@ class RedisJobService(JobService):
             updated_at=now,
         )
 
-        while True:
-            with self.client.pipeline() as pipe:
-                try:
-                    pipe.watch(self.active_key)
-                    active_job_id = pipe.get(self.active_key)
-                    if active_job_id:
-                        active_status = pipe.hget(self._job_key(active_job_id), "status")
-                        if active_status in ACTIVE_JOB_STATUSES:
-                            pipe.unwatch()
-                            active_job = self.get(active_job_id)
-                            if active_job is not None:
-                                raise ActiveIngestJobError(active_job)
-
-                    pipe.multi()
-                    pipe.hset(self._job_key(job_id), mapping=self._serialize_job(job))
-                    pipe.set(self.active_key, job_id)
-                    pipe.execute()
-                    return job
-                except redis.WatchError:
-                    continue
+        self.client.hset(self._job_key(job_id), mapping=self._serialize_job(job))
+        return job
 
     def enqueue(self, job_id: str) -> None:
         self.client.rpush(self.queue_name, job_id)
@@ -185,16 +143,6 @@ class RedisJobService(JobService):
         if item is None:
             return None
         return item[1]
-
-    def get_active_ingest_job(self) -> IngestJobState | None:
-        active_job_id = self.client.get(self.active_key)
-        if not active_job_id:
-            return None
-        job = self.get(active_job_id)
-        if job is not None and job.status in ACTIVE_JOB_STATUSES:
-            return job
-        self._delete_active_if_matches(active_job_id)
-        return None
 
     def get(self, job_id: str) -> IngestJobState | None:
         values = self.client.hgetall(self._job_key(job_id))
@@ -210,28 +158,10 @@ class RedisJobService(JobService):
         encoded = {key: self._encode_value(value) for key, value in updates.items()}
         self.client.hset(self._job_key(job_id), mapping=encoded)
 
-        if updates.get("status") in TERMINAL_JOB_STATUSES:
-            self._delete_active_if_matches(job_id)
-
         job = self.get(job_id)
         if job is None:
             raise KeyError(job_id)
         return job
-
-    def _delete_active_if_matches(self, job_id: str) -> None:
-        while True:
-            with self.client.pipeline() as pipe:
-                try:
-                    pipe.watch(self.active_key)
-                    if pipe.get(self.active_key) != job_id:
-                        pipe.unwatch()
-                        return
-                    pipe.multi()
-                    pipe.delete(self.active_key)
-                    pipe.execute()
-                    return
-                except redis.WatchError:
-                    continue
 
     @classmethod
     def _serialize_job(cls, job: IngestJobState) -> dict[str, str | int]:

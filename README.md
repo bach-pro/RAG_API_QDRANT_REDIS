@@ -183,8 +183,9 @@ Nếu bỏ cả `doc_id` và `doc_ids`, một file sẽ nhận `doc_id` tự sin
 API lưu request/file, tạo trạng thái job `queued` trong Redis rồi `RPUSH ingest_queue job_id`.
 Worker độc lập dùng `BLPOP`, chuyển job sang `running`, ingest vào Qdrant và kết thúc bằng
 `completed` hoặc `failed`. Dùng `GET /v1/ingest/{job_id}` để poll trạng thái; restart API
-không làm mất trạng thái job. Dữ liệu handoff được xóa sau khi worker xử lý xong. Mỗi thời
-điểm chỉ có một ingest job active.
+không làm mất trạng thái job. Dữ liệu handoff được xóa sau khi worker xử lý xong. API chấp
+nhận nhiều ingest job và Redis lấy các job đang chờ theo thứ tự FIFO; với một worker, các
+job được xử lý tuần tự.
 Một `doc_id` có thể đại diện cho toàn bộ các trang hoặc file được gửi trong cùng request.
 Khi dùng `doc_ids`, worker ingest từng file với ID riêng; upload lại một ID chỉ thay thế dữ
 liệu của file mang ID đó.

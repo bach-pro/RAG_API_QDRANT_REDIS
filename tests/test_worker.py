@@ -51,3 +51,43 @@ def test_worker_retries_after_redis_timeout(monkeypatch):
 
     assert job_service.dequeue_calls == 2
     assert sleep_calls == [0.25]
+
+
+def test_redis_job_service_queues_a_second_job_while_first_is_running(monkeypatch):
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.hashes: dict[str, dict[str, str]] = {}
+            self.queues: dict[str, list[str]] = {}
+
+        def hset(self, key: str, *, mapping: dict[str, object]) -> None:
+            values = self.hashes.setdefault(key, {})
+            values.update({field: str(value) for field, value in mapping.items()})
+
+        def hgetall(self, key: str) -> dict[str, str]:
+            return dict(self.hashes.get(key, {}))
+
+        def exists(self, key: str) -> bool:
+            return key in self.hashes
+
+        def rpush(self, queue: str, job_id: str) -> None:
+            self.queues.setdefault(queue, []).append(job_id)
+
+        def blpop(self, queue: str, *, timeout: int) -> tuple[str, str] | None:
+            del timeout
+            values = self.queues.get(queue, [])
+            return (queue, values.pop(0)) if values else None
+
+    fake_redis = FakeRedis()
+    monkeypatch.setattr(redis.Redis, "from_url", lambda *_args, **_kwargs: fake_redis)
+    service = RedisJobService("redis://redis:6379/0")
+
+    first = service.create_ingest_job("bot-a", "doc-1")
+    service.enqueue(first.job_id)
+    assert service.dequeue(timeout=1) == first.job_id
+    service.update(first.job_id, status="running")
+
+    second = service.create_ingest_job("bot-a", "doc-2")
+    service.enqueue(second.job_id)
+
+    assert second.status == "queued"
+    assert service.dequeue(timeout=1) == second.job_id
