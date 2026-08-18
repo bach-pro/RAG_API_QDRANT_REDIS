@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from rag_api.dependencies.services import get_chat_memory, get_rag_service
-from rag_api.schemas.chat import ChatRequest, ChatResponse, SourceResponse
+from rag_api.schemas.chat import ChatRequest, ChatResponse, ChatStopRequest, SourceResponse
 from rag_api.schemas.common import BotId
 from rag_app.memory import RedisChatMemory
 from rag_app.models import RetrievedDocument
@@ -226,3 +226,12 @@ def clear_chat_memory(
 ) -> dict[str, str]:
     memory.clear(_memory_conversation_id(bot_id, conversation_id))
     return {"status": "ok", "bot_id": bot_id}
+
+
+@router.post("/chat/stop")
+def stop_chat(
+    request: ChatStopRequest,
+    memory: RedisChatMemory = Depends(get_chat_memory),
+) -> dict[str, str]:
+    memory.clear(_memory_conversation_id(request.bot_id, request.conversation_id))
+    return {"status": "ok", "bot_id": request.bot_id}
